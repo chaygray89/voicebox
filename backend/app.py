@@ -175,7 +175,12 @@ def create_app() -> FastAPI:
 
 
 def _configure_cors(application: FastAPI) -> None:
-    """Set up CORS middleware with local-first defaults."""
+    """Set up CORS middleware with local-first defaults.
+
+    CallForge runs on HTTPS while Voicebox runs on loopback. Modern Chromium
+    browsers treat that as a Private Network Access request, so the bridge
+    needs both a narrow origin allowlist and the PNA response header.
+    """
     default_origins = [
         "http://localhost:5173",  # Vite dev server
         "http://127.0.0.1:5173",
@@ -184,17 +189,36 @@ def _configure_cors(application: FastAPI) -> None:
         "tauri://localhost",  # Tauri webview (macOS)
         "https://tauri.localhost",  # Tauri webview (Windows/Linux)
         "http://tauri.localhost",  # Tauri webview (Windows, some builds)
+        "https://ventureq-nebius.vercel.app",
+        "https://ventureq-nebius-ik4o.vercel.app",
     ]
+    callforge_origin_pattern = (
+        r"^https://ventureq-nebius(?:-ik4o)?(?:-[a-z0-9-]+)?"
+        r"\.vercel\.app$"
+    )
     env_origins = os.environ.get("VOICEBOX_CORS_ORIGINS", "")
     all_origins = default_origins + [o.strip() for o in env_origins.split(",") if o.strip()]
+
+    def _allowed_callforge_origin(origin: str) -> bool:
+        return origin in all_origins or bool(re.match(callforge_origin_pattern, origin or ""))
 
     application.add_middleware(
         CORSMiddleware,
         allow_origins=all_origins,
+        allow_origin_regex=callforge_origin_pattern,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @application.middleware("http")
+    async def _callforge_private_network_access(request, call_next):
+        response = await call_next(request)
+        origin = request.headers.get("origin", "")
+        if _allowed_callforge_origin(origin):
+            if request.headers.get("access-control-request-private-network", "").lower() == "true":
+                response.headers["Access-Control-Allow-Private-Network"] = "true"
+        return response
 
 
 def _mount_frontend(application: FastAPI) -> None:
